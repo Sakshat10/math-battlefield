@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react';
 import HomeScreen from './screens/HomeScreen';
 import LobbyScreen from './screens/LobbyScreen';
 import GameScreen from './screens/GameScreen';
@@ -22,10 +23,15 @@ export default function App() {
     setScreen('lobby');
   }
 
-  function handleMatchFound({ roomId }) {
+  function handleMatchFoundWithMeta({ roomId, opponent }) {
     const socket = getSocket();
     myIdRef.current = socket?.id || null;
-    setGameInfo({ roomId, playerName: lobbyInfo.playerName });
+    setGameInfo({
+      roomId,
+      playerName: lobbyInfo.playerName,
+      opponent: opponent || null,
+      opponentWinStreak: opponent?.winStreak || 0,
+    });
     setScreen('game');
   }
 
@@ -33,8 +39,13 @@ export default function App() {
     // Capture myId at game-end time (socket still connected)
     const socket = getSocket();
     myIdRef.current = socket?.id || myIdRef.current;
-    setResult(data);
+    setResult({ ...data, roomId: gameInfo?.roomId });
     setScreen('result');
+  }
+
+  function handleRematchStart() {
+    setResult(null);
+    setScreen('game');
   }
 
   function handlePlayAgain() {
@@ -48,36 +59,62 @@ export default function App() {
 
   return (
     <>
-      {screen === 'home' && (
-        <HomeScreen
-          onJoinQueue={handleJoinQueue}
-          onGoLobby={handleGoLobby}
-        />
-      )}
+      <Show when="signed-out">
+        <div className="screen">
+          <h1 className="title">⚡ Math Battle</h1>
+          <p className="subtitle">Sign in to keep your XP, wins, and streaks.</p>
 
-      {screen === 'lobby' && lobbyInfo && (
-        <LobbyScreen
-          lobbyInfo={lobbyInfo}
-          onMatchFound={handleMatchFound}
-          onCancel={handlePlayAgain}
-        />
-      )}
+          <div className="card stack-md center" style={{ maxWidth: 460 }}>
+            <SignInButton>
+              <button className="btn btn-primary">Sign In</button>
+            </SignInButton>
 
-      {screen === 'game' && gameInfo && (
-        <GameScreen
-          roomId={gameInfo.roomId}
-          playerName={gameInfo.playerName}
-          onGameEnd={handleGameEnd}
-        />
-      )}
+            <SignUpButton>
+              <button className="btn btn-secondary">Sign Up</button>
+            </SignUpButton>
+          </div>
+        </div>
+      </Show>
 
-      {screen === 'result' && result && (
-        <ResultScreen
-          result={result}
-          myId={myIdRef.current}
-          onPlayAgain={handlePlayAgain}
-        />
-      )}
+      <Show when="signed-in">
+        <div className="auth-userbar">
+          <UserButton afterSignOutUrl="/" />
+        </div>
+
+        {screen === 'home' && (
+          <HomeScreen
+            onJoinQueue={handleJoinQueue}
+            onGoLobby={handleGoLobby}
+          />
+        )}
+
+        {screen === 'lobby' && lobbyInfo && (
+          <LobbyScreen
+            lobbyInfo={lobbyInfo}
+            onMatchFound={handleMatchFoundWithMeta}
+            onCancel={handlePlayAgain}
+          />
+        )}
+
+        {screen === 'game' && gameInfo && (
+          <GameScreen
+            roomId={gameInfo.roomId}
+            playerName={gameInfo.playerName}
+            opponentWinStreak={gameInfo.opponentWinStreak || 0}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+
+        {screen === 'result' && result && (
+          <ResultScreen
+            result={result}
+            myId={myIdRef.current}
+            roomId={gameInfo?.roomId}
+            onRematchStart={handleRematchStart}
+            onPlayAgain={handlePlayAgain}
+          />
+        )}
+      </Show>
     </>
   );
 }
