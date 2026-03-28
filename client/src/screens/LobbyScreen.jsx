@@ -10,12 +10,14 @@ import { getSocket } from '../socket/client';
  */
 export default function LobbyScreen({ lobbyInfo, onMatchFound, onCancel }) {
   const { type, code } = lobbyInfo;
+  const [opponentStreak, setOpponentStreak] = React.useState(0);
 
   useEffect(() => {
     const socket = getSocket();
     if (!socket) return;
 
     function handleFound(data) {
+      setOpponentStreak(data?.opponent?.winStreak || 0);
       onMatchFound(data);
     }
 
@@ -44,6 +46,10 @@ export default function LobbyScreen({ lobbyInfo, onMatchFound, onCancel }) {
         <p style={{ fontSize: '1.05rem', fontWeight: 700 }}>
           {type === 'queue' ? 'Searching for opponent…' : 'Waiting for a friend to join…'}
         </p>
+
+        {opponentStreak > 0 && (
+          <p className="streak-pressure">🔥 Opponent on {opponentStreak} win streak</p>
+        )}
 
         {type === 'created' && code && (
           <div className="stack-sm center">
