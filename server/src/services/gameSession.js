@@ -12,12 +12,17 @@ const SLOW_MAX_DELAY_MS = 1500;
 const LOTTERY_POOL = ['freeze', 'double', 'skip', 'slow', 'bonus'];
 
 class GameSession {
-  constructor(io, player1, player2, roomId) {
+  constructor(io, player1, player2, roomId, options = {}) {
+    const { getWinStreak, onGameEnd } = options;
+
     this.io = io;
     this.roomId = roomId;
+    this.getWinStreak = typeof getWinStreak === 'function' ? getWinStreak : () => 0;
+    this.onGameEnd = typeof onGameEnd === 'function' ? onGameEnd : null;
     this.players = {
       [player1.id]: {
         id: player1.id,
+        userId: player1.userId || null,
         name: player1.name,
         score: 0,
         comboCount: 0,
@@ -32,6 +37,7 @@ class GameSession {
       },
       [player2.id]: {
         id: player2.id,
+        userId: player2.userId || null,
         name: player2.name,
         score: 0,
         comboCount: 0,
@@ -47,10 +53,13 @@ class GameSession {
     };
     this.currentQuestion = null;
     this.playerQuestionOverrides = {}; // playerId -> temporary question (used by skip)
+    this.globalQuestionCount = 0;
     this.timeLeft = MATCH_DURATION;
     this.timer = null;
     this.ended = false;
     this.timeWarningSent = false;
+    this.finalRushSent = false;
+    this.disconnected = false;
   }
 
   getScoresPayload() {
@@ -59,6 +68,7 @@ class GameSession {
       id: p.id,
       name: p.name,
       score: p.score,
+      winStreak: this.getWinStreak(p.userId || p.id),
       comboCount: p.comboCount,
       comboMultiplier: p.comboMultiplier,
       streakCount: p.streakCount,
@@ -82,19 +92,59 @@ class GameSession {
     return this.timeLeft <= 10;
   }
 
+  _globalRushMultiplier() {
+    if (this.timeLeft <= 5) return 3;
+    if (this.timeLeft <= 10) return 2;
+    return 1;
+  }
+
   _scoreBroadcast(extra = {}) {
-    this.io.to(this.roomId).emit('game:updateScore', {
+    const payload = {
       scores: this.getScoresPayload(),
       ...extra,
+    };
+
+    this.io.to(this.roomId).emit('game:updateScore', payload);
+    this._emitTension(payload.scores);
+  }
+
+  _emitTension(scores) {
+    if (!scores || scores.length < 2) return;
+    const [a, b] = scores;
+    const diff = Math.abs(a.score - b.score);
+
+    if (diff > 10 || diff === 0) return;
+
+    const leader = a.score > b.score ? a : b;
+    const trailing = a.score > b.score ? b : a;
+
+    this.io.to(leader.id).emit('game:tension', {
+      type: 'pulling_ahead',
+      targetPlayerId: leader.id,
+      difference: diff,
+    });
+
+    this.io.to(trailing.id).emit('game:tension', {
+      type: 'catching_up',
+      targetPlayerId: trailing.id,
+      difference: diff,
     });
   }
 
-  _questionPayload(question) {
+  _questionPayload(question, playerId) {
+    const player = this.players[playerId];
+    const now = Date.now();
+
     return {
       id: question.id,
       question: question.question,
       difficulty: question.difficulty,
       type: question.type || 'normal',
+      isFrozenForQuestion: Boolean(player?.freezeOnQuestionId === question.id),
+      isSlowedForQuestion:
+        Boolean(player?.slowOnQuestionId === question.id) && now < (player?.slowUntil || 0),
+      slowMsLeft:
+        player?.slowOnQuestionId === question.id ? Math.max(0, (player?.slowUntil || 0) - now) : 0,
     };
   }
 
@@ -137,7 +187,7 @@ class GameSession {
   _emitQuestionToRoom(question) {
     for (const playerId of Object.keys(this.players)) {
       this._applyQuestionStartEffects(playerId, question);
-      this.io.to(playerId).emit('game:question', this._questionPayload(question));
+      this.io.to(playerId).emit('game:question', this._questionPayload(question, playerId));
     }
   }
 
@@ -145,7 +195,7 @@ class GameSession {
     if (applyIncomingEffects) {
       this._applyQuestionStartEffects(playerId, question);
     }
-    this.io.to(playerId).emit('game:question', this._questionPayload(question));
+    this.io.to(playerId).emit('game:question', this._questionPayload(question, playerId));
   }
 
   _randomInt(min, max) {
@@ -158,7 +208,9 @@ class GameSession {
 
   _nextQuestion() {
     const difficulty = this._getDifficulty();
-    this.currentQuestion = generateQuestion(difficulty);
+    this.globalQuestionCount += 1;
+    const forcePowerup = this.globalQuestionCount % 5 === 0;
+    this.currentQuestion = generateQuestion(difficulty, { forcePowerup });
     this.playerQuestionOverrides = {};
     this._emitQuestionToRoom(this.currentQuestion);
   }
@@ -189,6 +241,14 @@ class GameSession {
         this.io.to(this.roomId).emit('game:timeWarning', {
           timeLeft: this.timeLeft,
           multiplier: 2,
+        });
+      }
+
+      if (!this.finalRushSent && this.timeLeft <= 5) {
+        this.finalRushSent = true;
+        this.io.to(this.roomId).emit('game:finalRush', {
+          timeLeft: this.timeLeft,
+          multiplier: 3,
         });
       }
 
@@ -268,10 +328,13 @@ class GameSession {
     });
   }
 
-  _resetStreakOnOpponentCorrect(playerId) {
+  _resetOpponentMomentum(playerId) {
     const opponentId = this._getOpponentId(playerId);
     if (!opponentId) return;
-    this.players[opponentId].streakCount = 0;
+    const opponent = this.players[opponentId];
+    opponent.streakCount = 0;
+    opponent.comboCount = 0;
+    opponent.comboMultiplier = 1;
   }
 
   _handleStreakReward(playerId) {
@@ -335,7 +398,7 @@ class GameSession {
       player.comboCount += 1;
       player.comboMultiplier = this._comboMultiplier(player.comboCount);
       player.streakCount += 1;
-      this._resetStreakOnOpponentCorrect(playerId);
+      this._resetOpponentMomentum(playerId);
 
       let totalMultiplier = player.comboMultiplier;
       const usedEffectMultiplier = player.nextAnswerMultiplier;
@@ -344,9 +407,9 @@ class GameSession {
         player.nextAnswerMultiplier = 1;
       }
 
-      const finalRush = this._isFinalRush();
-      if (finalRush) {
-        totalMultiplier *= 2;
+      const rushMultiplier = this._globalRushMultiplier();
+      if (rushMultiplier > 1) {
+        totalMultiplier *= rushMultiplier;
       }
 
       const pointsAwarded = POINTS_PER_CORRECT * totalMultiplier;
@@ -358,7 +421,8 @@ class GameSession {
         totalMultiplier,
         comboMultiplier: player.comboMultiplier,
         usedEffectMultiplier,
-        finalRush,
+        finalRush: rushMultiplier === 2,
+        chaosMode: rushMultiplier === 3,
         streakCount: player.streakCount,
       });
 
@@ -408,6 +472,17 @@ class GameSession {
       winner: winner ? winner.id : null,
       winnerName: winner ? winner.name : null,
     });
+
+    if (this.onGameEnd) {
+      this.onGameEnd(
+        {
+          scores,
+          winner: winner ? winner.id : null,
+          winnerName: winner ? winner.name : null,
+        },
+        this
+      );
+    }
   }
 }
 
