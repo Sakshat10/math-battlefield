@@ -13,7 +13,7 @@ let socket = null;
  * Returns a Promise that resolves with a fully-connected socket.
  * Creates a fresh connection every call (after disconnecting old one).
  */
-export function connectSocket(name) {
+export function connectSocket(name, token) {
   return new Promise((resolve, reject) => {
     // Always start fresh
     if (socket) {
@@ -23,7 +23,7 @@ export function connectSocket(name) {
     }
 
     socket = io(SERVER_URL, {
-      auth: { name: name || 'Anonymous' },
+      auth: { name: name || 'Anonymous', token },
       autoConnect: true,
       reconnection: false, // don't auto-reconnect mid-session
     });
