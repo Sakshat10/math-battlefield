@@ -11,7 +11,7 @@ const CIRCUMFERENCE = 2 * Math.PI * 36; // r=36
  *   playerName: string
  *   onGameEnd: (endData) => void
  */
-export default function GameScreen({ roomId, playerName, onGameEnd }) {
+export default function GameScreen({ roomId, playerName, opponentWinStreak = 0, onGameEnd }) {
   const [countdown, setCountdown] = useState(3);  // 3…2…1 overlay
   const [gameStarted, setGameStarted] = useState(false);
   const [question, setQuestion] = useState(null);
@@ -20,6 +20,7 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
   const [timeLeft, setTimeLeft] = useState(TOTAL_TIME);
   const [flash, setFlash] = useState(null); // 'correct' | 'wrong' | null
   const [finalRush, setFinalRush] = useState(false);
+  const [chaosMode, setChaosMode] = useState(false);
   const [notice, setNotice] = useState('');
   const [momentumHint, setMomentumHint] = useState('');
   const [streakText, setStreakText] = useState('');
@@ -27,6 +28,10 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
   const [comboPulse, setComboPulse] = useState(null);
   const [isInputFrozen, setIsInputFrozen] = useState(false);
   const [isInputSlowed, setIsInputSlowed] = useState(false);
+  const [freezeFx, setFreezeFx] = useState(false);
+  const [slowFx, setSlowFx] = useState(false);
+  const [questionPulse, setQuestionPulse] = useState(false);
+  const [chaosPulse, setChaosPulse] = useState(false);
   const inputRef = useRef(null);
   const socketRef = useRef(null);
   const prevCombosRef = useRef({});
@@ -35,6 +40,20 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
   const scorePopTimerRef = useRef(null);
   const comboPulseTimerRef = useRef(null);
   const slowTimerRef = useRef(null);
+  const freezeFxTimerRef = useRef(null);
+  const slowFxTimerRef = useRef(null);
+  const questionPulseTimerRef = useRef(null);
+  const chaosPulseTimerRef = useRef(null);
+
+  const QUESTION_META = {
+    normal: { icon: '🧮', label: 'Normal Question' },
+    freeze: { icon: '❄️', label: 'Freeze Power-Up' },
+    double: { icon: '⚡', label: 'Double Points Power-Up' },
+    skip: { icon: '⏭️', label: 'Skip Power-Up' },
+    slow: { icon: '🐢', label: 'Slow Power-Up' },
+    bonus: { icon: '🎯', label: 'Bonus x3 Power-Up' },
+    lottery: { icon: '🎰', label: 'Lottery Power-Up' },
+  };
 
   // Countdown timer (3…2…1…GO)
   useEffect(() => {
@@ -79,12 +98,6 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
       prevCombosRef.current = Object.fromEntries(
         nextScores.map((s) => [s.id, s.comboMultiplier || 1])
       );
-
-      if (mine && opp && mine.score < opp.score && opp.score - mine.score <= 20) {
-        setMomentumHint("You're catching up!");
-      } else {
-        setMomentumHint('');
-      }
     }
 
     socket.on('game:start', ({ players }) => {
@@ -96,6 +109,29 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
     socket.on('game:question', (q) => {
       setQuestion(q);
       setAnswer('');
+
+      // Question payload is authoritative for one-question freeze/slow effects.
+      setIsInputFrozen(Boolean(q?.isFrozenForQuestion));
+
+      if (q?.isSlowedForQuestion) {
+        setIsInputSlowed(true);
+        clearTimeout(slowTimerRef.current);
+        slowTimerRef.current = setTimeout(
+          () => setIsInputSlowed(false),
+          q?.slowMsLeft || 1200
+        );
+      } else {
+        setIsInputSlowed(false);
+      }
+
+      if (q?.type && q.type !== 'normal') {
+        const meta = QUESTION_META[q.type] || QUESTION_META.normal;
+        showNotice(`${meta.icon} ${meta.label}`, 1400);
+        setQuestionPulse(true);
+        clearTimeout(questionPulseTimerRef.current);
+        questionPulseTimerRef.current = setTimeout(() => setQuestionPulse(false), 520);
+      }
+
       setTimeout(() => inputRef.current?.focus(), 50);
     });
 
@@ -145,6 +181,9 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
         if (effect.targetPlayerId === myId) {
           setIsInputFrozen(true);
           showNotice('Frozen for this question ❄️');
+          setFreezeFx(true);
+          clearTimeout(freezeFxTimerRef.current);
+          freezeFxTimerRef.current = setTimeout(() => setFreezeFx(false), 1300);
         } else if (effect.fromPlayerId === myId) {
           showNotice('You earned FREEZE!');
         }
@@ -154,6 +193,9 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
         if (effect.targetPlayerId === myId) {
           setIsInputSlowed(true);
           showNotice('You got SLOWED 🐢');
+          setSlowFx(true);
+          clearTimeout(slowFxTimerRef.current);
+          slowFxTimerRef.current = setTimeout(() => setSlowFx(false), 1100);
           clearTimeout(slowTimerRef.current);
           slowTimerRef.current = setTimeout(
             () => setIsInputSlowed(false),
@@ -194,8 +236,24 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
       showNotice('Final Rush: all points x2!');
     });
 
+    socket.on('game:finalRush', () => {
+      setFinalRush(true);
+      setChaosMode(true);
+      setChaosPulse(true);
+      clearTimeout(chaosPulseTimerRef.current);
+      chaosPulseTimerRef.current = setTimeout(() => setChaosPulse(false), 1600);
+      showNotice('FINAL RUSH 🔥 x3 points!', 1800);
+    });
+
+    socket.on('game:tension', ({ targetPlayerId, type }) => {
+      if (targetPlayerId !== socket.id) return;
+      if (type === 'catching_up') setMomentumHint("🔥 You're catching up!");
+      if (type === 'pulling_ahead') setMomentumHint("🚀 You're pulling ahead!");
+      setTimeout(() => setMomentumHint(''), 1200);
+    });
+
     socket.on('game:end', (data) => {
-      onGameEnd(data);
+      onGameEnd({ ...data, roomId });
     });
 
     socket.on('game:opponentLeft', (data) => {
@@ -211,6 +269,8 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
       socket.off('game:powerupEffect');
       socket.off('game:streakReward');
       socket.off('game:timeWarning');
+      socket.off('game:finalRush');
+      socket.off('game:tension');
       socket.off('game:end');
       socket.off('game:opponentLeft');
       clearTimeout(noticeTimerRef.current);
@@ -218,6 +278,10 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
       clearTimeout(scorePopTimerRef.current);
       clearTimeout(comboPulseTimerRef.current);
       clearTimeout(slowTimerRef.current);
+      clearTimeout(freezeFxTimerRef.current);
+      clearTimeout(slowFxTimerRef.current);
+      clearTimeout(questionPulseTimerRef.current);
+      clearTimeout(chaosPulseTimerRef.current);
     };
   }, [roomId, playerName]);
 
@@ -249,6 +313,8 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
   const dashOffset = CIRCUMFERENCE * (1 - progress);
   const isUrgent = finalRush || timeLeft <= 10;
   const questionType = question?.type || 'normal';
+  const questionMeta = QUESTION_META[questionType] || QUESTION_META.normal;
+  const oppPreGameStreak = oppScore?.winStreak || opponentWinStreak;
 
   if (!gameStarted) {
     return (
@@ -260,6 +326,9 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
         )}
         <div className="countdown-wait">
           <p className="subtitle">Match found! Preparing…</p>
+          {opponentWinStreak > 0 && (
+            <p className="streak-pressure">🔥 Opponent on {opponentWinStreak} win streak</p>
+          )}
           <div className="spinner" />
         </div>
       </div>
@@ -267,7 +336,19 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
   }
 
   return (
-    <div className="screen screen-compact">
+    <div className={`screen screen-compact ${chaosMode ? 'chaos-mode' : ''} ${isUrgent ? 'rush-pulse' : ''}`}>
+      {freezeFx && (
+        <div className="fx-overlay freeze-overlay">
+          <div className="fx-text">FROZEN</div>
+        </div>
+      )}
+
+      {slowFx && (
+        <div className="fx-overlay slow-overlay">
+          <div className="fx-text">SLOWED</div>
+        </div>
+      )}
+
       {/* Countdown overlay */}
       {countdown !== null && (
         <div className="countdown-overlay">
@@ -279,6 +360,7 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
         <div className="score-row">
           <div className="score-box you">
             <div className="score-name">You - {myScore?.name || playerName}</div>
+            {(myScore?.winStreak || 0) > 0 && <div className="name-streak">🔥 {myScore.winStreak}W</div>}
             <div className="score-value-wrap">
               <div className="score-value">{myScore?.score ?? 0}</div>
               {scorePop?.side === 'you' && <div className="score-pop">+{scorePop.points}</div>}
@@ -289,6 +371,7 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
           </div>
           <div className="score-box opponent">
             <div className="score-name">Opponent - {oppScore?.name || '?'}</div>
+            {(oppScore?.winStreak || 0) > 0 && <div className="name-streak opponent">🔥 {oppScore.winStreak}W</div>}
             <div className="score-value-wrap">
               <div className="score-value">{oppScore?.score ?? 0}</div>
               {scorePop?.side === 'opponent' && <div className="score-pop">+{scorePop.points}</div>}
@@ -313,9 +396,15 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
             </svg>
             <div className="timer-text">{timeLeft}</div>
           </div>
-          {isUrgent && <p className="urgent-text">Final Rush x2</p>}
+          {isUrgent && <p className="urgent-text">{chaosMode ? 'FINAL RUSH x3' : 'Final Rush x2'}</p>}
         </div>
       </div>
+
+      {oppPreGameStreak > 0 && !chaosMode && (
+        <div className="streak-pressure">🔥 Opponent entered on {oppPreGameStreak} win streak</div>
+      )}
+
+      {chaosMode && <div className={`chaos-banner ${chaosPulse ? 'pulse' : ''}`}>FINAL RUSH 🔥</div>}
 
       {(notice || momentumHint) && (
         <div className="status-banner" role="status" aria-live="polite">
@@ -327,11 +416,14 @@ export default function GameScreen({ roomId, playerName, onGameEnd }) {
 
       {/* Question */}
       <div
-        className={`question-card question-type-${questionType} ${flash === 'correct' ? 'flash-correct' : ''} ${flash === 'wrong' ? 'flash-wrong' : ''}`}
+        className={`question-card question-type-${questionType} ${questionPulse ? 'question-special-pop' : ''} ${flash === 'correct' ? 'flash-correct' : ''} ${flash === 'wrong' ? 'flash-wrong' : ''}`}
         id="question-display"
       >
+        <div className={`question-type-pill q-pill-${questionType}`}>
+          {questionMeta.icon} {questionMeta.label}
+        </div>
         <p className="label" style={{ marginBottom: 8 }}>
-          Solve{questionType !== 'normal' ? ` · ${questionType.toUpperCase()} POWER-UP` : ':'}
+          Solve:
         </p>
         <div className="question-text">{question?.question ?? '…'}</div>
       </div>

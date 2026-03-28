@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useAuth, useUser } from '@clerk/react';
 import { connectSocket } from '../socket/client';
 
 export default function HomeScreen({ onJoinQueue, onGoLobby }) {
@@ -7,18 +8,30 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
   const [error, setError] = useState('');
   const [mode, setMode] = useState(null); // null | 'join'
   const [loading, setLoading] = useState(false);
+  const { getToken } = useAuth();
+  const { user } = useUser();
 
-  const playerName = name.trim() || 'Anonymous';
+  const profileName = user?.username || user?.firstName || user?.fullName || '';
+  const playerName = name.trim() || profileName || 'Anonymous';
+
+  async function getSessionToken() {
+    const token = await getToken();
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+    return token;
+  }
 
   async function handleQuickMatch() {
     setError('');
     setLoading(true);
     try {
-      const socket = await connectSocket(playerName);
+      const token = await getSessionToken();
+      const socket = await connectSocket(playerName, token);
       socket.emit('matchmaking:join');
       onJoinQueue(playerName, socket.id);
     } catch (e) {
-      setError('Could not connect to server. Is the server running on port 3001?');
+      setError('Could not connect. Check auth + server on port 3001.');
     } finally {
       setLoading(false);
     }
@@ -28,7 +41,8 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
     setError('');
     setLoading(true);
     try {
-      const socket = await connectSocket(playerName);
+      const token = await getSessionToken();
+      const socket = await connectSocket(playerName, token);
 
       socket.once('room:created', ({ code, roomId }) => {
         setLoading(false);
@@ -38,7 +52,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
       socket.emit('room:create');
     } catch (e) {
       setLoading(false);
-      setError('Could not connect to server. Is the server running on port 3001?');
+      setError('Could not connect. Check auth + server on port 3001.');
     }
   }
 
@@ -52,7 +66,8 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
 
     setLoading(true);
     try {
-      const socket = await connectSocket(playerName);
+      const token = await getSessionToken();
+      const socket = await connectSocket(playerName, token);
 
       socket.once('room:error', ({ message }) => {
         setLoading(false);
@@ -67,7 +82,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
       socket.emit('room:join', { code });
     } catch (e) {
       setLoading(false);
-      setError('Could not connect to server. Is the server running on port 3001?');
+      setError('Could not connect. Check auth + server on port 3001.');
     }
   }
 
