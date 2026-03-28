@@ -47,7 +47,12 @@ function randomQuestionType() {
   return weightedPick(POWERUP_TYPES);
 }
 
-function generateQuestion(difficulty = 'easy') {
+function randomPowerupType() {
+  return weightedPick(POWERUP_TYPES);
+}
+
+function generateQuestion(difficulty = 'easy', options = {}) {
+  const { forcePowerup = false } = options;
   const op =
     difficulty === 'hard'
       ? pickRandom(hardOperations)
@@ -120,7 +125,7 @@ function generateQuestion(difficulty = 'easy') {
     question: questionText,
     answer,
     difficulty,
-    type: randomQuestionType(),
+    type: forcePowerup ? randomPowerupType() : randomQuestionType(),
   };
 }
 
