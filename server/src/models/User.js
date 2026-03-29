@@ -2,11 +2,17 @@ const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema(
   {
-    clerkId: {
+    userKey: {
       type: String,
       required: true,
       unique: true,
       index: true,
+    },
+    clerkId: {
+      type: String,
+      unique: true,
+      index: true,
+      sparse: true,
     },
     username: {
       type: String,
@@ -28,6 +34,26 @@ const UserSchema = new mongoose.Schema(
     losses: {
       type: Number,
       default: 0,
+    },
+    draws: {
+      type: Number,
+      default: 0,
+    },
+    totalMatches: {
+      type: Number,
+      default: 0,
+    },
+    currentWinStreak: {
+      type: Number,
+      default: 0,
+    },
+    highestWinStreak: {
+      type: Number,
+      default: 0,
+    },
+    lastSeenAt: {
+      type: Date,
+      default: Date.now,
     },
   },
   {
