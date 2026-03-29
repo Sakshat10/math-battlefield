@@ -1,57 +1,117 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth, useUser } from '@clerk/react';
 import { connectSocket } from '../socket/client';
 
-export default function HomeScreen({ onJoinQueue, onGoLobby }) {
+const STORAGE_KEY = 'mathBattle_playerName';
+
+export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }) {
   const [name, setName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState('');
   const [mode, setMode] = useState(null); // null | 'join'
-  const [loading, setLoading] = useState(false);
+  const [loadingAction, setLoadingAction] = useState(null); // null | 'quick' | 'create' | 'join'
   const { getToken } = useAuth();
   const { user } = useUser();
 
+  // Load saved name on mount
+  useEffect(() => {
+    const savedName = localStorage.getItem(STORAGE_KEY);
+    if (savedName) {
+      setName(savedName);
+    }
+  }, []);
+
+  // Save name to localStorage whenever it changes
+  const handleNameChange = (e) => {
+    const newName = e.target.value;
+    setName(newName);
+    if (newName.trim()) {
+      localStorage.setItem(STORAGE_KEY, newName.trim());
+    }
+  };
+
   const profileName = user?.username || user?.firstName || user?.fullName || '';
   const playerName = name.trim() || profileName || 'Anonymous';
+  const loading = loadingAction !== null;
 
   async function getSessionToken() {
-    const token = await getToken();
-    if (!token) {
-      throw new Error('Not authenticated');
+    try {
+      const token = await getToken();
+      return token || null;
+    } catch (err) {
+      return null; // allow gameplay without auth for dev
     }
-    return token;
+  }
+
+  function attachMatchFoundFallback(socket) {
+    socket.once('matchmaking:found', (data) => {
+      setLoadingAction(null);
+      if (onQuickMatchFound) {
+        onQuickMatchFound({
+          ...data,
+          playerNameOverride: playerName,
+        });
+      }
+    });
   }
 
   async function handleQuickMatch() {
     setError('');
-    setLoading(true);
+    setLoadingAction('quick');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token);
+      const socket = await connectSocket(playerName, token || undefined);
+
+      // Fallback listener: catches an ultra-fast match before Lobby mounts.
+      attachMatchFoundFallback(socket);
+
       socket.emit('matchmaking:join');
       onJoinQueue(playerName, socket.id);
     } catch (e) {
       setError('Could not connect. Check auth + server on port 3001.');
     } finally {
-      setLoading(false);
+      setLoadingAction(null);
     }
   }
 
   async function handleCreateRoom() {
     setError('');
-    setLoading(true);
+    setLoadingAction('create');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token);
+      const socket = await connectSocket(playerName, token || undefined);
 
-      socket.once('room:created', ({ code, roomId }) => {
-        setLoading(false);
+      // Defensive fallback for very fast room matches.
+      attachMatchFoundFallback(socket);
+
+      let roomCreatedTimeout = null;
+
+      const handleRoomCreated = ({ code, roomId }) => {
+        if (roomCreatedTimeout) clearTimeout(roomCreatedTimeout);
+        setLoadingAction(null);
         onGoLobby({ type: 'created', code, roomId, playerName });
-      });
+      };
+
+      const handleRoomError = ({ message }) => {
+        if (roomCreatedTimeout) clearTimeout(roomCreatedTimeout);
+        setLoadingAction(null);
+        setError(message || 'Failed to create room');
+      };
+
+      socket.once('room:created', handleRoomCreated);
+      socket.once('room:error', handleRoomError);
+
+      // Timeout after 5 seconds if no response from server.
+      roomCreatedTimeout = setTimeout(() => {
+        setLoadingAction(null);
+        setError('Room creation timed out. Please try again.');
+        socket.off('room:created', handleRoomCreated);
+        socket.off('room:error', handleRoomError);
+      }, 5000);
 
       socket.emit('room:create');
     } catch (e) {
-      setLoading(false);
+      setLoadingAction(null);
       setError('Could not connect. Check auth + server on port 3001.');
     }
   }
@@ -64,24 +124,27 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
       return;
     }
 
-    setLoading(true);
+    setLoadingAction('join');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token);
+      const socket = await connectSocket(playerName, token || undefined);
+
+      // Critical fallback: room join can trigger matchmaking:found before Lobby mounts.
+      attachMatchFoundFallback(socket);
 
       socket.once('room:error', ({ message }) => {
-        setLoading(false);
+        setLoadingAction(null);
         setError(message);
       });
 
       socket.once('room:joined', ({ code: c, roomId }) => {
-        setLoading(false);
+        setLoadingAction(null);
         onGoLobby({ type: 'joined', code: c, roomId, playerName });
       });
 
       socket.emit('room:join', { code });
     } catch (e) {
-      setLoading(false);
+      setLoadingAction(null);
       setError('Could not connect. Check auth + server on port 3001.');
     }
   }
@@ -100,18 +163,18 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
             placeholder="Enter your name..."
             value={name}
             maxLength={20}
-            onChange={(e) => setName(e.target.value)}
+            onChange={handleNameChange}
           />
         </div>
 
         <div className="divider" />
 
         <button id="btn-quick-match" className="btn btn-primary" onClick={handleQuickMatch} disabled={loading}>
-          {loading ? '⏳ Connecting…' : '⚡ Quick Match'}
+          {loadingAction === 'quick' ? '⏳ Connecting…' : '⚡ Quick Match'}
         </button>
 
         <button id="btn-create-room" className="btn btn-secondary" onClick={handleCreateRoom} disabled={loading}>
-          🏠 Create Private Room
+          {loadingAction === 'create' ? '⏳ Connecting…' : '🏠 Create Private Room'}
         </button>
 
         <button
@@ -135,7 +198,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby }) {
               onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
             />
             <button id="btn-join-submit" className="btn btn-primary" onClick={handleJoinRoom} disabled={loading}>
-              Join Room
+              {loadingAction === 'join' ? '⏳ Joining…' : 'Join Room'}
             </button>
           </div>
         )}
