@@ -107,6 +107,8 @@ export default function GameScreen({ roomId, playerName, opponentWinStreak = 0, 
     });
 
     socket.on('game:question', (q) => {
+      // Recover from missed game:start by unlocking the screen when first question arrives.
+      setGameStarted(true);
       setQuestion(q);
       setAnswer('');
 
@@ -136,6 +138,7 @@ export default function GameScreen({ roomId, playerName, opponentWinStreak = 0, 
     });
 
     socket.on('game:tick', ({ timeLeft: t }) => {
+      setGameStarted(true);
       setTimeLeft(t);
       if (t <= 10) setFinalRush(true);
     });
@@ -147,6 +150,7 @@ export default function GameScreen({ roomId, playerName, opponentWinStreak = 0, 
         pointsAwarded,
         finalRush: isFinalRushRound,
       } = payload;
+      setGameStarted(true);
       setScores(s);
       updateDerivedUiFromScores(s);
 
