@@ -54,6 +54,7 @@ function createSession(io, player1, player2, roomId) {
         const winnerPlayer = endedSession.players[result.winner];
         const loserId = playerIds.find((id) => id !== result.winner);
         const loserPlayer = loserId ? endedSession.players[loserId] : null;
+        const scoreById = Object.fromEntries((result.scores || []).map((s) => [s.id, s.score]));
 
         const winnerCoins = randomCoins();
         const loserCoins = randomCoins();
@@ -65,19 +66,28 @@ function createSession(io, player1, player2, roomId) {
           io.to(loserPlayer.id).emit('game:reward', { coins: loserCoins });
         }
 
-        if (winnerPlayer?.userId && loserPlayer?.userId) {
-          recordMatchResult({
-            winnerClerkId: winnerPlayer.userId,
-            loserClerkId: loserPlayer.userId,
-            winnerCoins,
-            loserCoins,
-          }).catch((err) => {
-            console.error('[stats] recordMatchResult failed', err.message);
-          });
-        }
+        recordMatchResult({
+          winnerPlayer: {
+            clerkId: winnerPlayer?.userId || null,
+            username: winnerPlayer?.name || 'Winner',
+            score: scoreById[result.winner] || 0,
+          },
+          loserPlayer: {
+            clerkId: loserPlayer?.userId || null,
+            username: loserPlayer?.name || 'Loser',
+            score: loserId ? scoreById[loserId] || 0 : 0,
+          },
+          winnerCoins,
+          loserCoins,
+          roomId,
+          durationSec: 60,
+        }).catch((err) => {
+          console.error('[stats] recordMatchResult failed', err.message);
+        });
       } else {
-        const coinsByClerkId = {};
-        const drawClerkIds = [];
+        const scoreById = Object.fromEntries((result.scores || []).map((s) => [s.id, s.score]));
+        const drawPlayers = [];
+        const coinsByUserKey = {};
 
         for (const id of playerIds) {
           const p = endedSession.players[id];
@@ -88,16 +98,21 @@ function createSession(io, player1, player2, roomId) {
             coins: rewardCoins,
           });
 
-          if (p.userId) {
-            drawClerkIds.push(p.userId);
-            coinsByClerkId[p.userId] = rewardCoins;
-          }
+          const userKey = p.userId ? `clerk:${p.userId}` : `guest:${String(p.name || 'anonymous').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'anonymous'}`;
+          coinsByUserKey[userKey] = rewardCoins;
+          drawPlayers.push({
+            clerkId: p.userId || null,
+            username: p.name || 'Anonymous',
+            score: scoreById[id] || 0,
+          });
         }
 
-        if (drawClerkIds.length) {
+        if (drawPlayers.length) {
           recordDraw({
-            playerClerkIds: drawClerkIds,
-            coinsByClerkId,
+            players: drawPlayers,
+            coinsByUserKey,
+            roomId,
+            durationSec: 60,
           }).catch((err) => {
             console.error('[stats] recordDraw failed', err.message);
           });
