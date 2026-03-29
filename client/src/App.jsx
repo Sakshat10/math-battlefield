@@ -4,6 +4,7 @@ import HomeScreen from './screens/HomeScreen';
 import LobbyScreen from './screens/LobbyScreen';
 import GameScreen from './screens/GameScreen';
 import ResultScreen from './screens/ResultScreen';
+import ProfileScreen from './screens/ProfileScreen';
 import { getSocket, disconnectSocket } from './socket/client';
 
 export default function App() {
@@ -23,12 +24,12 @@ export default function App() {
     setScreen('lobby');
   }
 
-  function handleMatchFoundWithMeta({ roomId, opponent }) {
+  function handleMatchFoundWithMeta({ roomId, opponent, playerNameOverride }) {
     const socket = getSocket();
     myIdRef.current = socket?.id || null;
     setGameInfo({
       roomId,
-      playerName: lobbyInfo.playerName,
+      playerName: playerNameOverride || lobbyInfo?.playerName || 'Player',
       opponent: opponent || null,
       opponentWinStreak: opponent?.winStreak || 0,
     });
@@ -78,6 +79,15 @@ export default function App() {
 
       <Show when="signed-in">
         <div className="auth-userbar">
+          {screen !== 'profile' && (
+            <button
+              className="btn-icon"
+              onClick={() => setScreen('profile')}
+              title="View Profile"
+            >
+              👤
+            </button>
+          )}
           <UserButton afterSignOutUrl="/" />
         </div>
 
@@ -85,7 +95,12 @@ export default function App() {
           <HomeScreen
             onJoinQueue={handleJoinQueue}
             onGoLobby={handleGoLobby}
+            onQuickMatchFound={handleMatchFoundWithMeta}
           />
+        )}
+
+        {screen === 'profile' && (
+          <ProfileScreen onBack={() => setScreen('home')} />
         )}
 
         {screen === 'lobby' && lobbyInfo && (
