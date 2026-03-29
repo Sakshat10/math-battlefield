@@ -10,7 +10,12 @@ const dotenv = require('dotenv');
 const { verifyToken } = require('@clerk/backend');
 const { registerHandlers } = require('./socket/handlers');
 const { connectMongo } = require('./db/mongo');
-const { ensureUser, getLeaderboard } = require('./services/userStats');
+const {
+  ensureUser,
+  getLeaderboard,
+  getUserProfile,
+  getRecentMatchesForUser,
+} = require('./services/userStats');
 
 dotenv.config();
 
@@ -38,9 +43,11 @@ async function authMiddleware(req, res, next) {
       username: payload.username || payload.email || payload.sub,
     };
 
-    await ensureUser({
+    ensureUser({
       clerkId: req.auth.userId,
       username: req.auth.username,
+    }).catch((err) => {
+      console.warn('[stats] ensureUser failed in authMiddleware:', err.message);
     });
 
     next();
@@ -53,9 +60,22 @@ async function authMiddleware(req, res, next) {
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.get('/me', authMiddleware, async (req, res) => {
+  const profile = await getUserProfile({
+    clerkId: req.auth.userId,
+    username: req.auth.username,
+  });
+
+  const recentMatches = await getRecentMatchesForUser({
+    clerkId: req.auth.userId,
+    username: req.auth.username,
+    limit: 10,
+  });
+
   res.json({
     userId: req.auth.userId,
     username: req.auth.username,
+    ...(profile || {}),
+    recentMatches,
   });
 });
 
@@ -78,35 +98,39 @@ io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   const fallbackName = socket.handshake.auth?.name || 'Anonymous';
 
-  if (!token) {
-    return next(new Error('Authentication required'));
+  if (token) {
+    try {
+      const payload = await verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY,
+      });
+
+      socket.userId = payload.sub;
+      socket.userName = fallbackName;
+
+      ensureUser({
+        clerkId: socket.userId,
+        username: socket.userName,
+      }).catch((err) => {
+        console.warn('[stats] ensureUser failed in socket auth:', err.message);
+      });
+    } catch (err) {
+      console.warn('[auth] Token verification failed:', err.message);
+      socket.userId = null;
+    }
+  } else {
+    socket.userId = null;
   }
 
-  try {
-    const payload = await verifyToken(token, {
-      secretKey: process.env.CLERK_SECRET_KEY,
-    });
-
-    socket.userId = payload.sub;
-    socket.userName = fallbackName;
-
-    await ensureUser({
-      clerkId: socket.userId,
-      username: socket.userName,
-    });
-
-    next();
-  } catch (err) {
-    next(new Error('Invalid authentication token'));
-  }
+  next();
 });
 
 // Register all Socket.io event handlers
 registerHandlers(io);
 
-connectMongo()
-  .finally(() => {
-    httpServer.listen(PORT, () => {
-      console.log(`✅ Math Battle server running on http://localhost:${PORT}`);
-    });
-  });
+httpServer.listen(PORT, () => {
+  console.log(`✅ Math Battle server running on http://localhost:${PORT}`);
+});
+
+connectMongo().catch((err) => {
+  console.error('[mongo] connect failed:', err.message);
+});
