@@ -28,8 +28,16 @@ export function connectSocket(name, token) {
       reconnection: false, // don't auto-reconnect mid-session
     });
 
-    socket.once('connect', () => resolve(socket));
-    socket.once('connect_error', (err) => reject(err));
+    console.log(`[socket] Connecting to ${SERVER_URL} as "${name}"...`);
+
+    socket.once('connect', () => {
+      console.log(`[socket] Connected! Socket ID: ${socket.id}`);
+      resolve(socket);
+    });
+    socket.once('connect_error', (err) => {
+      console.error(`[socket] Connection error:`, err);
+      reject(err);
+    });
   });
 }
 
