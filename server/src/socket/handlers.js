@@ -4,6 +4,7 @@
 
 const { MatchmakingService } = require('../services/matchmaking');
 const { GameSession } = require('../services/gameSession');
+const { TugOfWarSession } = require('../services/TugOfWarSession');
 const { recordMatchResult, recordDraw } = require('../services/userStats');
 
 const matchmaking = new MatchmakingService();
@@ -23,8 +24,9 @@ function randomCoins() {
   return Math.floor(10 + Math.random() * 41);
 }
 
-function createSession(io, player1, player2, roomId) {
-  const session = new GameSession(io, player1, player2, roomId, {
+function createSession(io, player1, player2, roomId, gameMode) {
+  const SessionClass = gameMode === 'tug' ? TugOfWarSession : GameSession;
+  const session = new SessionClass(io, player1, player2, roomId, {
     getWinStreak,
     onGameEnd: (result, endedSession) => {
       if (endedSession.disconnected) return;
@@ -151,7 +153,8 @@ function registerHandlers(io) {
     // Matchmaking
     socket.on('matchmaking:join', () => {
       const p = player();
-      console.log(`[matchmaking] ${p.name} joining queue`);
+      const gameMode = socket.handshake.auth?.gameMode || 'classic';
+      console.log(`[matchmaking] ${p.name} joining queue (mode: ${gameMode})`);
       const match = matchmaking.addToQueue(p);
 
       if (!match) return;
@@ -163,6 +166,7 @@ function registerHandlers(io) {
 
       io.to(player1.id).emit('matchmaking:found', {
         roomId,
+        gameMode,
         opponent: {
           id: player2.id,
           name: player2.name,
@@ -171,6 +175,7 @@ function registerHandlers(io) {
       });
       io.to(player2.id).emit('matchmaking:found', {
         roomId,
+        gameMode,
         opponent: {
           id: player1.id,
           name: player1.name,
@@ -178,9 +183,9 @@ function registerHandlers(io) {
         },
       });
 
-      console.log(`[match] ${player1.name} vs ${player2.name} in room ${roomId}`);
+      console.log(`[match] ${player1.name} vs ${player2.name} in room ${roomId} (mode: ${gameMode})`);
 
-      const session = createSession(io, player1, player2, roomId);
+      const session = createSession(io, player1, player2, roomId, gameMode);
       session.start();
     });
 
@@ -191,10 +196,11 @@ function registerHandlers(io) {
     // Private rooms
     socket.on('room:create', () => {
       const p = player();
-      const code = matchmaking.createRoom(p);
+      const gameMode = socket.handshake.auth?.gameMode || 'classic';
+      const code = matchmaking.createRoom(p, { gameMode });
       socket.join(`room_${code}`);
-      socket.emit('room:created', { code, roomId: `room_${code}` });
-      console.log(`[room] ${p.name} created room ${code}`);
+      socket.emit('room:created', { code, roomId: `room_${code}`, gameMode });
+      console.log(`[room] ${p.name} created room ${code} (mode: ${gameMode})`);
     });
 
     socket.on('room:join', ({ code }) => {
@@ -217,9 +223,11 @@ function registerHandlers(io) {
       if (!result.ready) return;
 
       const { player1, player2, roomId } = result;
+      const gameMode = result.gameMode || socket.handshake.auth?.gameMode || 'classic';
 
       io.to(player1.id).emit('matchmaking:found', {
         roomId,
+        gameMode,
         opponent: {
           id: player2.id,
           name: player2.name,
@@ -228,6 +236,7 @@ function registerHandlers(io) {
       });
       io.to(player2.id).emit('matchmaking:found', {
         roomId,
+        gameMode,
         opponent: {
           id: player1.id,
           name: player1.name,
@@ -235,9 +244,9 @@ function registerHandlers(io) {
         },
       });
 
-      console.log(`[room] ${player1.name} vs ${player2.name} via code ${trimmedCode}`);
+      console.log(`[room] ${player1.name} vs ${player2.name} via code ${trimmedCode} (mode: ${gameMode})`);
 
-      const session = createSession(io, player1, player2, roomId);
+      const session = createSession(io, player1, player2, roomId, gameMode);
       session.start();
     });
 
