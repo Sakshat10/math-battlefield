@@ -9,6 +9,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
   const [joinCode, setJoinCode] = useState('');
   const [error, setError] = useState('');
   const [mode, setMode] = useState(null); // null | 'join'
+  const [gameMode, setGameMode] = useState('classic'); // 'classic' | 'tug'
   const [loadingAction, setLoadingAction] = useState(null); // null | 'quick' | 'create' | 'join'
   const { getToken } = useAuth();
   const { user } = useUser();
@@ -60,13 +61,13 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
     setLoadingAction('quick');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token || undefined);
+      const socket = await connectSocket(playerName, token || undefined, gameMode);
 
       // Fallback listener: catches an ultra-fast match before Lobby mounts.
       attachMatchFoundFallback(socket);
 
       socket.emit('matchmaking:join');
-      onJoinQueue(playerName, socket.id);
+      onJoinQueue(playerName, socket.id, gameMode);
     } catch (e) {
       setError('Could not connect. Check auth + server on port 3001.');
     } finally {
@@ -79,7 +80,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
     setLoadingAction('create');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token || undefined);
+      const socket = await connectSocket(playerName, token || undefined, gameMode);
 
       // Defensive fallback for very fast room matches.
       attachMatchFoundFallback(socket);
@@ -89,7 +90,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
       const handleRoomCreated = ({ code, roomId }) => {
         if (roomCreatedTimeout) clearTimeout(roomCreatedTimeout);
         setLoadingAction(null);
-        onGoLobby({ type: 'created', code, roomId, playerName });
+        onGoLobby({ type: 'created', code, roomId, playerName, gameMode });
       };
 
       const handleRoomError = ({ message }) => {
@@ -127,7 +128,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
     setLoadingAction('join');
     try {
       const token = await getSessionToken();
-      const socket = await connectSocket(playerName, token || undefined);
+      const socket = await connectSocket(playerName, token || undefined, gameMode);
 
       // Critical fallback: room join can trigger matchmaking:found before Lobby mounts.
       attachMatchFoundFallback(socket);
@@ -139,7 +140,7 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
 
       socket.once('room:joined', ({ code: c, roomId }) => {
         setLoadingAction(null);
-        onGoLobby({ type: 'joined', code: c, roomId, playerName });
+        onGoLobby({ type: 'joined', code: c, roomId, playerName, gameMode });
       });
 
       socket.emit('room:join', { code });
@@ -153,6 +154,26 @@ export default function HomeScreen({ onJoinQueue, onGoLobby, onQuickMatchFound }
     <div className="screen">
       <h1 className="title">⚡ Math Battle</h1>
       <p className="subtitle">Challenge players to real-time math duels</p>
+
+      {/* Mode selector */}
+      <div className="mode-selector">
+        <button
+          id="mode-classic"
+          className={`mode-btn ${gameMode === 'classic' ? 'active' : ''}`}
+          onClick={() => setGameMode('classic')}
+          disabled={loading}
+        >
+          ⚔️ Classic
+        </button>
+        <button
+          id="mode-tug"
+          className={`mode-btn ${gameMode === 'tug' ? 'active' : ''}`}
+          onClick={() => setGameMode('tug')}
+          disabled={loading}
+        >
+          🪢 Tug of War
+        </button>
+      </div>
 
       <div className="card stack-md">
         <div>
