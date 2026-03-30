@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { getSocket } from '../socket/client';
 
 const TOTAL_TIME = 60;
@@ -13,253 +13,538 @@ const QUESTION_META = {
   lottery: { icon: '🎰', label: 'Lottery' },
 };
 
-/* ── SVG Rope component ──────────────────────────────────────────────────── */
-function RopeSVG({ ropePosition, pulling, isCritical, isVictoryMoment }) {
+/* ── Particle system ───────────────────────────────────────────────── */
+function DustParticles({ side, active }) {
+  const [particles, setParticles] = useState([]);
+  const idRef = useRef(0);
+
+  useEffect(() => {
+    if (!active) return;
+    const burst = Array.from({ length: 8 }, () => {
+      const id = ++idRef.current;
+      const angle = side === 'left'
+        ? (Math.random() * 120 + 120) * (Math.PI / 180) // spray to right-ish
+        : (Math.random() * 120 - 60) * (Math.PI / 180); // spray to left-ish
+      const speed = 18 + Math.random() * 28;
+      return {
+        id,
+        x: 0,
+        y: 0,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 10,
+        life: 1,
+        size: 2 + Math.random() * 4,
+      };
+    });
+    setParticles(p => [...p, ...burst]);
+    const cleanup = setTimeout(() => {
+      setParticles(p => p.filter(pt => !burst.find(b => b.id === pt.id)));
+    }, 600);
+    return () => clearTimeout(cleanup);
+  }, [active, side]);
+
+  return (
+    <svg
+      style={{ position: 'absolute', bottom: 0, [side === 'left' ? 'right' : 'left']: 0, width: 80, height: 80, overflow: 'visible', pointerEvents: 'none', zIndex: 5 }}
+      viewBox="0 0 80 80"
+    >
+      {particles.map(p => (
+        <circle
+          key={p.id}
+          cx={40 + p.vx * 0.4}
+          cy={70 - p.vy * 0.4}
+          r={p.size}
+          fill={side === 'left' ? 'rgba(34,211,238,0.55)' : 'rgba(249,115,22,0.55)'}
+          style={{ animation: 'dustFade 0.55s ease-out forwards' }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/* ── Realistic rope SVG ────────────────────────────────────────────── */
+function RopeSVG({ ropePosition, tensionLevel, pullSide, isVictoryMoment, frame }) {
   // ropePosition: -100 to +100
-  // rope knot moves along x: center is at 50%, each unit = 0.4% shift
-  const W = 700, H = 110;
-  const knotX = W / 2 + (ropePosition / 100) * (W * 0.38);
-  const knotY = H / 2;
+  const W = 760, H = 130;
+  const knotX = W / 2 + (ropePosition / 100) * (W * 0.40);
+  const knotY = H * 0.48;
 
-  // Rope segments — dots spaced along quadratic bezier from left end to knot, knot to right end
-  const numSegments = 18;
-  const leftEndX = 32;
-  const rightEndX = W - 32;
+  const leftEndX  = 20;
+  const rightEndX = W - 20;
 
-  // Control point sags downward slightly for a natural rope curve
-  const sag = 18 + Math.abs(ropePosition) * 0.12;
+  // Sag increases with tension — when both teams pull hard the rope goes taut (less sag)
+  // Base sag is high, and as tension increases (abs ropePosition) it sags less (more taut)
+  const baseSag = 30;
+  const tensionSag = Math.max(6, baseSag - Math.abs(ropePosition) * 0.22);
 
-  function ropePoints(x1, y1, x2, y2, cpX, cpY, n) {
-    const pts = [];
-    for (let i = 0; i <= n; i++) {
+  // Add micro-jitter when actively being pulled
+  const jitter = pullSide ? Math.sin(frame * 0.8) * 2.5 : 0;
+  const jitterY = pullSide ? Math.cos(frame * 1.1) * 1.5 : 0;
+
+  // Left CP sags more on the left side when rope goes right
+  const leftCPsag  = tensionSag + (ropePosition > 0 ? ropePosition * 0.08 : 0) + jitter;
+  const rightCPsag = tensionSag + (ropePosition < 0 ? -ropePosition * 0.08 : 0) - jitter;
+
+  const cpLeftX  = (leftEndX + knotX) / 2;
+  const cpLeftY  = knotY + leftCPsag + jitterY;
+  const cpRightX = (knotX + rightEndX) / 2;
+  const cpRightY = knotY + rightCPsag + jitterY;
+
+  // Number of rope strand points for the braided look
+  const N = 28;
+
+  function bezierPts(x1, y1, x2, y2, cpx, cpy, n) {
+    return Array.from({ length: n + 1 }, (_, i) => {
       const t = i / n;
-      const x = (1 - t) * (1 - t) * x1 + 2 * (1 - t) * t * cpX + t * t * x2;
-      const y = (1 - t) * (1 - t) * y1 + 2 * (1 - t) * t * cpY + t * t * y2;
-      pts.push({ x, y });
-    }
-    return pts;
+      const mt = 1 - t;
+      return {
+        x: mt * mt * x1 + 2 * mt * t * cpx + t * t * x2,
+        y: mt * mt * y1 + 2 * mt * t * cpy + t * t * y2,
+      };
+    });
   }
 
-  const cpLeftX = (leftEndX + knotX) / 2;
-  const cpLeftY = knotY + sag;
-  const cpRightX = (knotX + rightEndX) / 2;
-  const cpRightY = knotY + sag;
+  const leftPts  = bezierPts(leftEndX,  knotY, knotX, knotY, cpLeftX,  cpLeftY,  N);
+  const rightPts = bezierPts(knotX, knotY, rightEndX, knotY, cpRightX, cpRightY, N);
 
-  const leftPts  = ropePoints(leftEndX,  knotY, knotX, knotY, cpLeftX,  cpLeftY,  numSegments);
-  const rightPts = ropePoints(knotX, knotY, rightEndX, knotY, cpRightX, cpRightY, numSegments);
+  const leftD  = `M ${leftPts.map(p  => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
+  const rightD = `M ${rightPts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
 
-  const leftPath  = `M ${leftPts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
-  const rightPath = `M ${rightPts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
+  // Shadow path offset downward
+  const leftShadowPts  = bezierPts(leftEndX,  knotY + 5, knotX, knotY + 5, cpLeftX,  cpLeftY  + 4, N);
+  const rightShadowPts = bezierPts(knotX, knotY + 5, rightEndX, knotY + 5, cpRightX, cpRightY + 4, N);
+  const leftShadowD  = `M ${leftShadowPts.map(p  => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
+  const rightShadowD = `M ${rightShadowPts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' L ')}`;
 
-  const flagX = knotX;
-  const flagPole = 22;
+  // Braid offset paths (secondary strands for thickness illusion)
+  function shiftedPath(pts, oy) {
+    return `M ${pts.map(p => `${p.x.toFixed(1)},${(p.y + oy).toFixed(1)}`).join(' L ')}`;
+  }
+
+  const knoteR = isVictoryMoment ? 15 : 12;
+
+  // Flag
+  const flagPole = 26;
+  const flagDir  = ropePosition >= 0 ? 1 : -1;
+
+  // Taut indicator — show tension lines when close to edge
+  const isTaut = Math.abs(ropePosition) > 65;
+
+  const glowColor  = pullSide === 'left' ? '34,211,238' : pullSide === 'right' ? '249,115,22' : '196,163,90';
+  const glowAmount = pullSide ? 5 : 2;
 
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height="100%"
-      className={`tug-rope-svg ${pulling === 'left' ? 'rope-glow-left' : ''} ${pulling === 'right' ? 'rope-glow-right' : ''}`}
       style={{ overflow: 'visible' }}
     >
       <defs>
-        <linearGradient id="ropeGradL" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#c4a35a" stopOpacity="0.9" />
+        <linearGradient id="ropeGL" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%"   stopColor="#22d3ee" stopOpacity="0.95" />
+          <stop offset="50%"  stopColor="#c4a35a" stopOpacity="0.90" />
+          <stop offset="100%" stopColor="#c4a35a" stopOpacity="0.85" />
         </linearGradient>
-        <linearGradient id="ropeGradR" x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#c4a35a" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#f97316" stopOpacity="0.9" />
+        <linearGradient id="ropeGR" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%"   stopColor="#c4a35a" stopOpacity="0.85" />
+          <stop offset="50%"  stopColor="#c4a35a" stopOpacity="0.90" />
+          <stop offset="100%" stopColor="#f97316" stopOpacity="0.95" />
         </linearGradient>
-        <filter id="ropeGlow">
-          <feGaussianBlur stdDeviation="2" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        <filter id="ropeBlur">
+          <feGaussianBlur stdDeviation={glowAmount} result="blur"/>
+          <feColorMatrix type="matrix" in="blur"
+            values={`0 0 0 0 ${parseInt(glowColor.split(',')[0])/255}
+                     0 0 0 0 ${parseInt(glowColor.split(',')[1])/255}
+                     0 0 0 0 ${parseInt(glowColor.split(',')[2])/255}
+                     0 0 0 0.7 0`}
+            result="coloredBlur"
+          />
+          <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
         </filter>
-        <filter id="flagGlow">
-          <feGaussianBlur stdDeviation="3" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        <filter id="knotGlow">
+          <feGaussianBlur stdDeviation="4" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="shadowFilter">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feColorMatrix type="matrix" in="blur"
+            values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.4 0"
+            result="shadow"
+          />
+          <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
         </filter>
       </defs>
 
-      {/* Ground line */}
-      <line x1={leftEndX - 10} y1={knotY + 28} x2={rightEndX + 10} y2={knotY + 28}
-        stroke="rgba(103,232,249,0.12)" strokeWidth="2" />
+      {/* Ground / mud pit */}
+      <rect x={leftEndX - 10} y={knotY + 38} width={W - leftEndX * 2 + 20} height={14}
+        rx="4"
+        fill="rgba(20,40,30,0.55)"
+      />
+      <line x1={leftEndX - 14} y1={knotY + 38} x2={rightEndX + 14} y2={knotY + 38}
+        stroke="rgba(103,232,249,0.18)" strokeWidth="1.5"/>
 
-      {/* Win zone markers */}
-      <rect x={leftEndX - 12} y={knotY - 28} width={4} height={60}
-        fill="rgba(34,211,238,0.35)" rx="2" />
-      <rect x={rightEndX + 8} y={knotY - 28} width={4} height={60}
-        fill="rgba(249,115,22,0.35)" rx="2" />
-      <text x={leftEndX - 8} y={knotY - 32} textAnchor="middle"
-        fill="rgba(34,211,238,0.6)" fontSize="9" fontFamily="monospace">WIN</text>
-      <text x={rightEndX + 10} y={knotY - 32} textAnchor="middle"
-        fill="rgba(249,115,22,0.6)" fontSize="9" fontFamily="monospace">WIN</text>
+      {/* Win zone flags at edges */}
+      <rect x={leftEndX - 10} y={knotY - 38} width={5} height={82}
+        fill="rgba(34,211,238,0.45)" rx="2"
+        filter="url(#knotGlow)"
+      />
+      <rect x={rightEndX + 5} y={knotY - 38} width={5} height={82}
+        fill="rgba(249,115,22,0.45)" rx="2"
+        filter="url(#knotGlow)"
+      />
+      <text x={leftEndX - 7} y={knotY - 44} textAnchor="middle"
+        fill="rgba(34,211,238,0.8)" fontSize="10" fontFamily="monospace" fontWeight="bold">WIN</text>
+      <text x={rightEndX + 7} y={knotY - 44} textAnchor="middle"
+        fill="rgba(249,115,22,0.8)" fontSize="10" fontFamily="monospace" fontWeight="bold">WIN</text>
 
-      {/* Center mark */}
-      <line x1={W / 2} y1={knotY - 20} x2={W / 2} y2={knotY + 32}
-        stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="4,4" />
+      {/* Center dashed line */}
+      <line x1={W/2} y1={knotY - 34} x2={W/2} y2={knotY + 42}
+        stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeDasharray="5,4"/>
 
-      {/* Left rope half */}
-      <path d={leftPath} stroke="url(#ropeGradL)" strokeWidth="6"
-        fill="none" strokeLinecap="round" strokeLinejoin="round"
-        filter="url(#ropeGlow)" opacity="0.92" />
-      {/* Rope texture dots */}
-      {leftPts.filter((_, i) => i % 3 === 0).map((p, i) => (
-        <circle key={`ld-${i}`} cx={p.x} cy={p.y} r={2.2}
-          fill="rgba(255,255,255,0.28)" />
+      {/* === ROPE SHADOW (depth) === */}
+      <path d={leftShadowD}  stroke="rgba(0,0,0,0.35)" strokeWidth="9" fill="none" strokeLinecap="round"/>
+      <path d={rightShadowD} stroke="rgba(0,0,0,0.35)" strokeWidth="9" fill="none" strokeLinecap="round"/>
+
+      {/* === MAIN ROPE STRANDS === */}
+      {/* Thick base strand */}
+      <path d={leftD}  stroke="url(#ropeGL)" strokeWidth="8" fill="none"
+        strokeLinecap="round" strokeLinejoin="round"
+        filter="url(#ropeBlur)" opacity="0.95"/>
+      <path d={rightD} stroke="url(#ropeGR)" strokeWidth="8" fill="none"
+        strokeLinecap="round" strokeLinejoin="round"
+        filter="url(#ropeBlur)" opacity="0.95"/>
+
+      {/* Secondary strand (braid illusion) shifted up */}
+      <path d={shiftedPath(leftPts,  -2.5)} stroke="rgba(255,255,255,0.22)" strokeWidth="3" fill="none"
+        strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6,5"/>
+      <path d={shiftedPath(rightPts, -2.5)} stroke="rgba(255,255,255,0.22)" strokeWidth="3" fill="none"
+        strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6,5"/>
+
+      {/* Highlight strand */}
+      <path d={shiftedPath(leftPts,  -3)} stroke="rgba(255,255,255,0.14)" strokeWidth="2" fill="none"
+        strokeLinecap="round" strokeLinejoin="round"/>
+      <path d={shiftedPath(rightPts, -3)} stroke="rgba(255,255,255,0.14)" strokeWidth="2" fill="none"
+        strokeLinecap="round" strokeLinejoin="round"/>
+
+      {/* Knot texture dots along rope */}
+      {leftPts.filter((_,i) => i % 4 === 2).map((p, i) => (
+        <circle key={`lt-${i}`} cx={p.x} cy={p.y - 1} r={2.8}
+          fill="rgba(255,255,255,0.25)"/>
+      ))}
+      {rightPts.filter((_,i) => i % 4 === 2).map((p, i) => (
+        <circle key={`rt-${i}`} cx={p.x} cy={p.y - 1} r={2.8}
+          fill="rgba(255,255,255,0.25)"/>
       ))}
 
-      {/* Right rope half */}
-      <path d={rightPath} stroke="url(#ropeGradR)" strokeWidth="6"
-        fill="none" strokeLinecap="round" strokeLinejoin="round"
-        filter="url(#ropeGlow)" opacity="0.92" />
-      {rightPts.filter((_, i) => i % 3 === 0).map((p, i) => (
-        <circle key={`rd-${i}`} cx={p.x} cy={p.y} r={2.2}
-          fill="rgba(255,255,255,0.28)" />
+      {/* Taut stress marks when rope near edge */}
+      {isTaut && leftPts.filter((_,i) => i % 6 === 0 && i > 0).map((p, i) => (
+        <line key={`ts-${i}`}
+          x1={p.x - 3} y1={p.y - 5}
+          x2={p.x + 3} y2={p.y + 5}
+          stroke="rgba(255,220,50,0.5)" strokeWidth="1.2" strokeLinecap="round"/>
       ))}
 
-      {/* Center flag pole */}
-      <line x1={flagX} y1={knotY - flagPole} x2={flagX} y2={knotY + 8}
+      {/* === FLAG POLE ON KNOT === */}
+      <line x1={knotX} y1={knotY - flagPole - 4} x2={knotX} y2={knotY + 8}
         stroke="#e2c97e" strokeWidth="2.5" strokeLinecap="round"
-        filter="url(#flagGlow)" />
-
-      {/* Flag (red) — waves to the side being pulled */}
+        filter="url(#knotGlow)"/>
       <polygon
-        points={`${flagX},${knotY - flagPole} ${flagX + (ropePosition >= 0 ? 18 : -18)},${knotY - flagPole + 7} ${flagX},${knotY - flagPole + 14}`}
-        fill={isCritical ? '#ef4444' : '#f97316'}
-        opacity="0.92"
-        filter="url(#flagGlow)"
+        points={`${knotX},${knotY - flagPole} ${knotX + flagDir * 20},${knotY - flagPole + 9} ${knotX},${knotY - flagPole + 18}`}
+        fill={Math.abs(ropePosition) > 80 ? '#ef4444' : '#f97316'}
+        opacity="0.95"
+        filter="url(#knotGlow)"
       />
 
-      {/* Knot circle */}
-      <circle cx={knotX} cy={knotY} r={isVictoryMoment ? 16 : 11}
-        fill={isVictoryMoment ? '#fbbf24' : '#c4a35a'}
+      {/* === MAIN KNOT === */}
+      {/* Outer glow ring */}
+      <circle cx={knotX} cy={knotY} r={knoteR + 6}
+        fill="none"
+        stroke={isVictoryMoment ? 'rgba(251,191,36,0.5)' : 'rgba(196,163,90,0.2)'}
+        strokeWidth="2"
+      />
+      {/* Knot body */}
+      <circle cx={knotX} cy={knotY} r={knoteR}
+        fill={isVictoryMoment ? '#fbbf24' : '#b8873a'}
         stroke={isVictoryMoment ? '#fff' : '#e2c97e'}
         strokeWidth={isVictoryMoment ? 3 : 2}
-        filter="url(#flagGlow)"
-        className={isVictoryMoment ? 'knot-victory-pulse' : ''}
+        filter="url(#knotGlow)"
       />
-      {/* Knot X pattern */}
-      <line x1={knotX - 5} y1={knotY - 5} x2={knotX + 5} y2={knotY + 5}
-        stroke={isVictoryMoment ? '#7c3aed' : '#5c3d0a'} strokeWidth="2.5" strokeLinecap="round" />
-      <line x1={knotX + 5} y1={knotY - 5} x2={knotX - 5} y2={knotY + 5}
-        stroke={isVictoryMoment ? '#7c3aed' : '#5c3d0a'} strokeWidth="2.5" strokeLinecap="round" />
+      {/* Rope wrap lines on knot */}
+      <line x1={knotX - knoteR + 3} y1={knotY - 3} x2={knotX + knoteR - 3} y2={knotY + 3}
+        stroke="rgba(80,40,10,0.7)" strokeWidth="2.5" strokeLinecap="round"/>
+      <line x1={knotX - knoteR + 3} y1={knotY + 3} x2={knotX + knoteR - 3} y2={knotY - 3}
+        stroke="rgba(80,40,10,0.7)" strokeWidth="2.5" strokeLinecap="round"/>
+      <line x1={knotX} y1={knotY - knoteR + 2} x2={knotX} y2={knotY + knoteR - 2}
+        stroke="rgba(80,40,10,0.45)" strokeWidth="1.5" strokeLinecap="round"/>
+
+      {/* Victory pulse ring */}
+      {isVictoryMoment && (
+        <circle cx={knotX} cy={knotY} r={knoteR + 10}
+          fill="none" stroke="rgba(251,191,36,0.6)"
+          strokeWidth="3"
+          style={{ animation: 'knotVictoryPulse 0.5s ease-in-out infinite alternate' }}
+        />
+      )}
     </svg>
   );
 }
 
-/* ── Team figure component ───────────────────────────────────────────────── */
-function TeamFigures({ side, lean, isPulling, isWinning, isFrozen, name }) {
-  // side: 'left' | 'right'
-  // lean: 0-100 (how hard they're leaning back)
-  const leanDeg = side === 'left' ? -Math.min(lean * 0.3, 28) : Math.min(lean * 0.3, 28);
-  const color = side === 'left' ? '#22d3ee' : '#f97316';
-  const shadowColor = side === 'left' ? 'rgba(34,211,238,0.4)' : 'rgba(249,115,22,0.4)';
+/* ── Animated stick figure team ───────────────────────────────────── */
+function TeamFigures({ side, ropePosition, isPulling, isWinning, isFrozen, name, frame }) {
+  const isLeft  = side === 'left';
+  const color   = isLeft ? '#22d3ee' : '#f97316';
+  const shadow  = isLeft ? 'rgba(34,211,238,0.45)' : 'rgba(249,115,22,0.45)';
+
+  // How hard they're pulling — based on rope position relative to them
+  const dominance = isLeft ? Math.max(0, ropePosition) : Math.max(0, -ropePosition);
+  const oppPressure = isLeft ? Math.max(0, -ropePosition) : Math.max(0, ropePosition);
+
+  // Lean angle: lean back harder the more you're winning, forward when losing
+  const baseLean = isLeft ? -18 : 18;
+  const leanDeg  = isLeft
+    ? -(10 + dominance * 0.18 + (isPulling ? 8 : 0))
+    : (10 + dominance * 0.18 + (isPulling ? 8 : 0));
+
+  // When LOSING (opponent is dominant), figures are being dragged forward
+  const dragAngle = isLeft
+    ? Math.max(0, -ropePosition * 0.12)   // being dragged right
+    : Math.max(0, ropePosition * 0.12);   // being dragged left
+
+  const bodyAngle = isFrozen ? 0 : (leanDeg - (isLeft ? dragAngle : -dragAngle));
+
+  // Arm extension — arms reach further toward the rope when pulling
+  const armExtend = isPulling ? 6 : 0;
+
+  // Leg cycle for walking animation (digging in)
+  const legSwing = Math.sin(frame * 0.22) * (isPulling ? 14 : 6);
+  const legSwing2 = -legSwing;
+
+  // Sweat drops when under pressure
+  const stressed = oppPressure > 50;
+
+  const figures = [0, 1, 2]; // 3 figures
+
+  function Figure({ idx }) {
+    const scale = idx === 1 ? 1 : 0.78;
+    const offsetX = isLeft
+      ? (idx === 0 ? -28 : idx === 2 ? -54 : -6)
+      : (idx === 0 ? 28 : idx === 2 ? 54 : 6);
+    const opacity = idx === 1 ? 1 : 0.75;
+
+    // Each figure slightly different leg phase
+    const phaseOff = idx * 1.2;
+    const ls1 = Math.sin((frame * 0.22) + phaseOff) * (isPulling ? 14 : 5);
+    const ls2 = -ls1;
+
+    // Arm y spread depends on pulling effort
+    const armYSpread = isPulling ? 10 : 7;
+
+    // Where arms go — toward rope side
+    const armDir = isLeft ? 1 : -1;
+
+    const W = 40, H = 72;
+    const cx = 20;
+    const headY = 12, bodyTop = 20, bodyBot = 44, hipY = 44;
+
+    return (
+      <g transform={`translate(${offsetX * scale}, 0) scale(${scale}) rotate(${bodyAngle * 0.7}, ${cx}, ${hipY})`}
+         style={{ transformOrigin: `${cx}px ${hipY}px`, opacity }}>
+        {/* Shadow under feet */}
+        <ellipse cx={cx} cy={H - 4} rx={isLeft ? 8 : 10} ry={3}
+          fill="rgba(0,0,0,0.28)" />
+
+        {/* Head */}
+        <circle cx={cx} cy={headY} r={8.5} fill={color} opacity={0.97}
+          filter={isPulling ? `drop-shadow(0 0 6px ${color})` : undefined}
+        />
+
+        {/* Sweat drops */}
+        {stressed && (
+          <>
+            <ellipse cx={isLeft ? cx - 7 : cx + 7} cy={headY - 4} rx={1.5} ry={3}
+              fill="rgba(103,232,249,0.7)" transform={`rotate(${isLeft ? 15 : -15}, ${cx}, ${headY})`}/>
+            <ellipse cx={cx + (isLeft ? -10 : 10)} cy={headY + 2} rx={1.2} ry={2.2}
+              fill="rgba(103,232,249,0.55)" transform={`rotate(${isLeft ? 20 : -20}, ${cx}, ${headY})`}/>
+          </>
+        )}
+
+        {/* Body */}
+        <line x1={cx} y1={bodyTop} x2={cx} y2={bodyBot}
+          stroke={color} strokeWidth={3.5} strokeLinecap="round"/>
+
+        {/* Arms reaching toward rope */}
+        <line x1={cx} y1={28}
+          x2={cx + armDir * (14 + armExtend)} y2={28 - armYSpread * 0.5}
+          stroke={color} strokeWidth={3} strokeLinecap="round"/>
+        <line x1={cx} y1={30}
+          x2={cx + armDir * (14 + armExtend)} y2={30 + armYSpread * 0.5}
+          stroke={color} strokeWidth={3} strokeLinecap="round"/>
+
+        {/* Far arm (counter-balance) */}
+        <line x1={cx} y1={28}
+          x2={cx - armDir * 9} y2={24}
+          stroke={color} strokeWidth={2.5} strokeLinecap="round" opacity={0.7}/>
+
+        {/* Legs — animated digging in */}
+        <line x1={cx} y1={hipY}
+          x2={cx - 9 + ls1 * 0.4} y2={H - 14 + Math.abs(ls1) * 0.1}
+          stroke={color} strokeWidth={3.2} strokeLinecap="round"/>
+        <line x1={cx} y1={hipY}
+          x2={cx + 9 + ls2 * 0.4} y2={H - 14 + Math.abs(ls2) * 0.1}
+          stroke={color} strokeWidth={3.2} strokeLinecap="round"/>
+
+        {/* Feet */}
+        <line x1={cx - 9 + ls1 * 0.4} y1={H - 14}
+          x2={cx - 9 + ls1 * 0.4 + armDir * (-6)} y2={H - 14}
+          stroke={color} strokeWidth={2.8} strokeLinecap="round"/>
+        <line x1={cx + 9 + ls2 * 0.4} y1={H - 14}
+          x2={cx + 9 + ls2 * 0.4 + armDir * (-6)} y2={H - 14}
+          stroke={color} strokeWidth={2.8} strokeLinecap="round"/>
+
+        {/* Effort lines when pulling */}
+        {isPulling && (
+          <>
+            <line x1={cx + armDir * 16} y1={26} x2={cx + armDir * 22} y2={22}
+              stroke={color} strokeWidth={1.5} strokeLinecap="round" opacity={0.55}/>
+            <line x1={cx + armDir * 16} y1={30} x2={cx + armDir * 23} y2={32}
+              stroke={color} strokeWidth={1.5} strokeLinecap="round" opacity={0.40}/>
+            <line x1={cx + armDir * 17} y1={28} x2={cx + armDir * 24} y2={27}
+              stroke={color} strokeWidth={1.5} strokeLinecap="round" opacity={0.30}/>
+          </>
+        )}
+      </g>
+    );
+  }
 
   return (
-    <div
-      className={`tug-team-figures tug-team-${side} ${isPulling ? 'tug-team-pulling' : ''} ${isWinning ? 'tug-team-winning' : ''}`}
-    >
+    <div className={`tug-team-figures tug-team-${side} ${isPulling ? 'tug-team-pulling' : ''} ${isWinning ? 'tug-team-winning' : ''}`}>
       <div className="tug-player-name" style={{ color }}>
         {name}
         {isFrozen && <span style={{ marginLeft: 4 }}>❄️</span>}
       </div>
-      <div
-        className="tug-figures-row"
-        style={{
-          transform: `rotate(${leanDeg}deg)`,
-          filter: `drop-shadow(0 4px 12px ${shadowColor})`,
-        }}
-      >
-        {/* 3 stick figures per side */}
-        {[0, 1, 2].map((i) => (
-          <svg
-            key={i}
-            viewBox="0 0 40 70"
-            width={i === 1 ? 36 : 28}
-            height={i === 1 ? 64 : 50}
-            style={{ opacity: i === 1 ? 1 : 0.7 }}
-          >
-            {/* Body */}
-            <circle cx="20" cy="12" r="8" fill={color} opacity="0.95" />
-            <line x1="20" y1="20" x2="20" y2="44" stroke={color} strokeWidth="3.5" strokeLinecap="round" />
-            {/* Arms — angled back as if pulling */}
-            {side === 'left' ? (
-              <>
-                <line x1="20" y1="28" x2="34" y2="22" stroke={color} strokeWidth="3" strokeLinecap="round" />
-                <line x1="20" y1="28" x2="34" y2="34" stroke={color} strokeWidth="3" strokeLinecap="round" />
-              </>
-            ) : (
-              <>
-                <line x1="20" y1="28" x2="6" y2="22" stroke={color} strokeWidth="3" strokeLinecap="round" />
-                <line x1="20" y1="28" x2="6" y2="34" stroke={color} strokeWidth="3" strokeLinecap="round" />
-              </>
-            )}
-            {/* Legs — planted wide */}
-            <line x1="20" y1="44" x2="10" y2="62" stroke={color} strokeWidth="3" strokeLinecap="round" />
-            <line x1="20" y1="44" x2="30" y2="62" stroke={color} strokeWidth="3" strokeLinecap="round" />
-            {/* Feet */}
-            <line x1="10" y1="62" x2={side === 'left' ? 4 : 16} y2="62" stroke={color} strokeWidth="3" strokeLinecap="round" />
-            <line x1="30" y1="62" x2={side === 'left' ? 24 : 36} y2="62" stroke={color} strokeWidth="3" strokeLinecap="round" />
-          </svg>
-        ))}
+
+      <div className="tug-figures-wrap" style={{ position: 'relative' }}>
+        <svg
+          viewBox={`${isLeft ? -80 : -10} 0 160 80`}
+          width={isLeft ? 140 : 140}
+          height={90}
+          style={{ overflow: 'visible', filter: `drop-shadow(0 6px 16px ${shadow})` }}
+        >
+          {figures.map(i => <Figure key={i} idx={i} />)}
+        </svg>
+
+        {/* Ground dust */}
+        {isPulling && (
+          <div style={{
+            position: 'absolute', bottom: -4,
+            [isLeft ? 'right' : 'left']: 6,
+            width: 60, height: 10,
+            background: `radial-gradient(ellipse, ${isLeft ? 'rgba(34,211,238,0.35)' : 'rgba(249,115,22,0.35)'} 0%, transparent 70%)`,
+            borderRadius: '50%',
+            animation: 'dustPuff 0.4s ease-out',
+          }} />
+        )}
       </div>
-      {/* Effort grunt */}
+
       {isPulling && (
         <div className="tug-effort-text" style={{ color }}>
-          {side === 'left' ? '💪 PULL!' : 'PULL! 💪'}
+          {side === 'left' ? '💪 HEAVE!' : 'HEAVE! 💪'}
         </div>
       )}
     </div>
   );
 }
 
-/* ── Main screen ─────────────────────────────────────────────────────────── */
-export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak = 0, onGameEnd }) {
-  const [countdown, setCountdown]           = useState(3);
-  const [gameStarted, setGameStarted]       = useState(false);
-  const [question, setQuestion]             = useState(null);
-  const [answer, setAnswer]                 = useState('');
-  const [scores, setScores]                 = useState([]);
-  const [timeLeft, setTimeLeft]             = useState(TOTAL_TIME);
-  const [ropePosition, setRopePosition]     = useState(0);
-  const [pulling, setPulling]               = useState(null);   // 'left'|'right'|null
-  const [flash, setFlash]                   = useState(null);
-  const [notice, setNotice]                 = useState('');
-  const [comboBanner, setComboBanner]       = useState('');
-  const [dominanceBanner, setDominanceBanner] = useState('');
-  const [comebackBanner, setComebackBanner] = useState('');
-  const [tensionWarning, setTensionWarning] = useState(false);
-  const [isCritical, setIsCritical]         = useState(false);
-  const [isVictoryMoment, setIsVictoryMoment] = useState(false);
-  const [finalRush, setFinalRush]           = useState(false);
-  const [isInputFrozen, setIsInputFrozen]   = useState(false);
-  const [isInputSlowed, setIsInputSlowed]   = useState(false);
-  const [freezeFx, setFreezeFx]             = useState(false);
-  const [slowFx, setSlowFx]                 = useState(false);
-  const [streakText, setStreakText]          = useState('');
-  const [myPulling, setMyPulling]           = useState(false);
+/* ── Ground / mud streak ───────────────────────────────────────────── */
+function MudStreak({ ropePosition }) {
+  const streak = ropePosition / 100; // -1 to 1
+  const streakColor = streak > 0 ? 'rgba(34,211,238,0.22)' : 'rgba(249,115,22,0.22)';
+  const streakWidth = Math.abs(streak) * 38;
 
-  const inputRef            = useRef(null);
-  const socketRef           = useRef(null);
-  const noticeTimerRef      = useRef(null);
-  const dominanceTimerRef   = useRef(null);
-  const comebackTimerRef    = useRef(null);
-  const comboBannerTimerRef = useRef(null);
-  const pullingTimerRef     = useRef(null);
-  const myPullingTimerRef   = useRef(null);
-  const slowTimerRef        = useRef(null);
-  const freezeFxTimerRef    = useRef(null);
-  const slowFxTimerRef      = useRef(null);
-  const streakTimerRef      = useRef(null);
+  return (
+    <div style={{ position: 'absolute', bottom: 0, left: '50%', height: 4, display: 'flex', alignItems: 'center' }}>
+      <div style={{
+        position: 'absolute',
+        [streak > 0 ? 'left' : 'right']: 0,
+        width: `${streakWidth}%`,
+        height: 4,
+        background: streakColor,
+        borderRadius: 2,
+        transition: 'width 0.3s ease',
+      }} />
+    </div>
+  );
+}
+
+/* ── Main screen ─────────────────────────────────────────────────── */
+export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak = 0, onGameEnd }) {
+  const [countdown, setCountdown]             = useState(3);
+  const [gameStarted, setGameStarted]         = useState(false);
+  const [question, setQuestion]               = useState(null);
+  const [answer, setAnswer]                   = useState('');
+  const [scores, setScores]                   = useState([]);
+  const [timeLeft, setTimeLeft]               = useState(TOTAL_TIME);
+  const [ropePosition, setRopePosition]       = useState(0);
+  const [pulling, setPulling]                 = useState(null);
+  const [flash, setFlash]                     = useState(null);
+  const [notice, setNotice]                   = useState('');
+  const [comboBanner, setComboBanner]         = useState('');
+  const [dominanceBanner, setDominanceBanner] = useState('');
+  const [comebackBanner, setComebackBanner]   = useState('');
+  const [tensionWarning, setTensionWarning]   = useState(false);
+  const [isCritical, setIsCritical]           = useState(false);
+  const [isVictoryMoment, setIsVictoryMoment] = useState(false);
+  const [finalRush, setFinalRush]             = useState(false);
+  const [isInputFrozen, setIsInputFrozen]     = useState(false);
+  const [isInputSlowed, setIsInputSlowed]     = useState(false);
+  const [freezeFx, setFreezeFx]               = useState(false);
+  const [slowFx, setSlowFx]                   = useState(false);
+  const [streakText, setStreakText]           = useState('');
+  const [myPulling, setMyPulling]             = useState(false);
+  const [screenShake, setScreenShake]         = useState(false);
+  const [frame, setFrame]                     = useState(0);
+
+  // Animation loop for stick figures
+  useEffect(() => {
+    let raf;
+    let f = 0;
+    function tick() {
+      f += 1;
+      setFrame(f);
+      raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  const inputRef             = useRef(null);
+  const socketRef            = useRef(null);
+  const noticeTimerRef       = useRef(null);
+  const dominanceTimerRef    = useRef(null);
+  const comebackTimerRef     = useRef(null);
+  const comboBannerTimerRef  = useRef(null);
+  const pullingTimerRef      = useRef(null);
+  const myPullingTimerRef    = useRef(null);
+  const slowTimerRef         = useRef(null);
+  const freezeFxTimerRef     = useRef(null);
+  const slowFxTimerRef       = useRef(null);
+  const streakTimerRef       = useRef(null);
+  const shakeTimerRef        = useRef(null);
 
   // Countdown
   useEffect(() => {
     if (countdown === null) return;
     if (countdown <= 0) { setCountdown(null); return; }
-    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    const t = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(t);
   }, [countdown]);
+
+  const triggerShake = useCallback(() => {
+    setScreenShake(true);
+    clearTimeout(shakeTimerRef.current);
+    shakeTimerRef.current = setTimeout(() => setScreenShake(false), 350);
+  }, []);
 
   useEffect(() => {
     const socket = getSocket();
@@ -274,7 +559,7 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
     function triggerPull(side) {
       setPulling(side);
       clearTimeout(pullingTimerRef.current);
-      pullingTimerRef.current = setTimeout(() => setPulling(null), 500);
+      pullingTimerRef.current = setTimeout(() => setPulling(null), 520);
     }
 
     socket.on('game:start', ({ players, ropePosition: rp }) => {
@@ -314,9 +599,10 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
     socket.on('game:ropeUpdate', ({ ropePosition: rp }) => {
       setRopePosition(rp);
       const abs = Math.abs(rp);
-      setTensionWarning(abs >= 75);
-      setIsCritical(abs >= 90);
+      setTensionWarning(abs >= 65);
+      setIsCritical(abs >= 85);
       setIsVictoryMoment(abs >= 100);
+      if (abs >= 65) triggerShake();
     });
 
     socket.on('game:updateScore', ({ scores: s, lastCorrect, comboMultiplier }) => {
@@ -352,7 +638,7 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
 
     socket.on('game:comeback', ({ playerId }) => {
       const isMe = playerId === socket.id;
-      setComebackBanner(isMe ? '🔥 COMEBACK!' : '😱 Opponent is coming back!');
+      setComebackBanner(isMe ? '🔥 COMEBACK!' : '😱 Opponent coming back!');
       clearTimeout(comebackTimerRef.current);
       comebackTimerRef.current = setTimeout(() => setComebackBanner(''), 2000);
     });
@@ -388,8 +674,8 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
       }
 
       if (effect.fromPlayerId === myId && effect.status !== 'blocked') {
-        if (effect.type === 'double') showNotice('Next pull = x2 ⚡');
-        if (effect.type === 'bonus')  showNotice('BONUS pull ready! 🎯');
+        if (effect.type === 'double')  showNotice('Next pull = x2 ⚡');
+        if (effect.type === 'bonus')   showNotice('BONUS pull ready! 🎯');
         if (effect.type === 'lottery') showNotice('Lottery hit! 🎰');
       }
     });
@@ -414,13 +700,13 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
       ['game:start','game:question','game:tick','game:ropeUpdate','game:updateScore',
        'game:wrongAnswer','game:dominance','game:comeback','game:powerupEffect',
        'game:streakReward','game:timeWarning','game:finalRush','game:end','game:opponentLeft'
-      ].forEach((e) => socket.off(e));
+      ].forEach(e => socket.off(e));
       [noticeTimerRef, dominanceTimerRef, comebackTimerRef, comboBannerTimerRef,
        pullingTimerRef, myPullingTimerRef, slowTimerRef, freezeFxTimerRef,
-       slowFxTimerRef, streakTimerRef
-      ].forEach((r) => clearTimeout(r.current));
+       slowFxTimerRef, streakTimerRef, shakeTimerRef
+      ].forEach(r => clearTimeout(r.current));
     };
-  }, [roomId, playerName]);
+  }, [roomId, playerName, triggerShake]);
 
   function triggerFlash(type) {
     setFlash(type);
@@ -431,17 +717,16 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
   function submitAnswer() {
     if (!question || answer.trim() === '' || isInputFrozen || isInputSlowed) return;
     const socket = socketRef.current;
-    // Show my pull effort immediately
     setMyPulling(true);
     clearTimeout(myPullingTimerRef.current);
-    myPullingTimerRef.current = setTimeout(() => setMyPulling(false), 500);
+    myPullingTimerRef.current = setTimeout(() => setMyPulling(false), 520);
     socket.emit('game:answer', { roomId, questionId: question.id, answer: answer.trim() });
     setAnswer('');
   }
 
-  const myId    = socketRef.current?.id;
-  const myScore = scores.find((s) => s.id === myId);
-  const oppScore = scores.find((s) => s.id !== myId);
+  const myId     = socketRef.current?.id;
+  const myScore  = scores.find(s => s.id === myId);
+  const oppScore = scores.find(s => s.id !== myId);
 
   const progress   = timeLeft / TOTAL_TIME;
   const dashOffset = CIRCUMFERENCE * (1 - progress);
@@ -449,10 +734,10 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
   const questionType = question?.type || 'normal';
   const questionMeta = QUESTION_META[questionType] || QUESTION_META.normal;
 
-  // Lean amount for figures: 0–100 based on how far rope is on each side
-  const myLean  = Math.max(0, ropePosition);    // positive = my side pulled more
-  const oppLean = Math.max(0, -ropePosition);   // negative = opp side pulled more
+  // Tension level 0..1
+  const tensionLevel = Math.abs(ropePosition) / 100;
 
+  // Left is always "me", right is always opponent
   if (!gameStarted) {
     return (
       <div className="screen">
@@ -471,7 +756,13 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
   }
 
   return (
-    <div className={`tug-screen ${isUrgent ? 'rush-pulse' : ''} ${isCritical ? 'tug-critical-screen' : ''}`}>
+    <div className={[
+      'tug-screen',
+      isUrgent       ? 'rush-pulse'          : '',
+      isCritical     ? 'tug-critical-screen' : '',
+      screenShake    ? 'tug-shake'           : '',
+      isVictoryMoment? 'tug-victory-screen'  : '',
+    ].join(' ')}>
       {freezeFx && <div className="fx-overlay freeze-overlay"><div className="fx-text">FROZEN</div></div>}
       {slowFx   && <div className="fx-overlay slow-overlay"><div className="fx-text">SLOWED</div></div>}
       {countdown !== null && (
@@ -480,7 +771,7 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
         </div>
       )}
 
-      {/* ── Top bar: timer + labels ─────────────────────────── */}
+      {/* ── Top bar ─────────────────────────────────────────────── */}
       <div className="tug-topbar">
         <div className="tug-topbar-side tug-side-you">
           <span className="tug-topbar-name">⚔️ {myScore?.name || playerName}</span>
@@ -504,66 +795,77 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
         </div>
       </div>
 
-      {/* ── Main tug-of-war field ───────────────────────────── */}
+      {/* ── Main arena ──────────────────────────────────────────── */}
       <div className="tug-field">
-        {/* Players left */}
+        {/* Left team (me) */}
         <TeamFigures
           side="left"
-          lean={myLean}
+          ropePosition={ropePosition}
           isPulling={pulling === 'left' || myPulling}
           isWinning={ropePosition > 50}
           isFrozen={isInputFrozen}
           name={myScore?.name || playerName}
+          frame={frame}
         />
 
         {/* Rope */}
         <div className="tug-rope-container">
           <RopeSVG
             ropePosition={ropePosition}
-            pulling={pulling}
-            isCritical={isCritical}
+            tensionLevel={tensionLevel}
+            pullSide={pulling}
             isVictoryMoment={isVictoryMoment}
+            frame={frame}
           />
 
-          {/* Position indicator */}
+          {/* Power bar below rope */}
           <div className="tug-pos-indicator">
             <div
               className="tug-pos-arrow"
               style={{
-                left: `calc(50% + ${ropePosition * 0.38}%)`,
+                left: `calc(50% + ${ropePosition * 0.40}%)`,
                 color: ropePosition > 0 ? '#22d3ee' : ropePosition < 0 ? '#f97316' : '#9bb9c9',
               }}
-            >
-              ▼
-            </div>
+            >▼</div>
             <div className="tug-pos-bar">
+              {/* Gradient fill showing dominance */}
               <div className="tug-pos-fill-left"
                 style={{ width: `${Math.max(0, -ropePosition / 2)}%` }} />
               <div className="tug-pos-fill-right"
                 style={{ width: `${Math.max(0, ropePosition / 2)}%` }} />
+              {/* Tension shimmer */}
+              {tensionWarning && (
+                <div className="tug-bar-shimmer"
+                  style={{ background: isCritical
+                    ? 'linear-gradient(90deg, transparent, rgba(239,68,68,0.3), transparent)'
+                    : 'linear-gradient(90deg, transparent, rgba(251,191,36,0.25), transparent)',
+                  }}
+                />
+              )}
             </div>
           </div>
 
           {/* Tension warning */}
           {tensionWarning && !isVictoryMoment && (
             <div className={`tug-tension-warning ${isCritical ? 'tug-tension-critical' : ''}`}>
-              {isCritical ? '🚨 ALMOST THERE!' : '⚠️ Almost there!'}
+              {isCritical ? '🚨 ALMOST THERE — PULL HARDER!' : '⚠️ Almost there!'}
             </div>
           )}
         </div>
 
-        {/* Players right */}
+        {/* Right team (opponent) */}
         <TeamFigures
           side="right"
-          lean={oppLean}
+          ropePosition={ropePosition}
           isPulling={pulling === 'right'}
           isWinning={ropePosition < -50}
           isFrozen={false}
           name={oppScore?.name || '?'}
+          frame={frame}
         />
       </div>
 
-      {/* ── Banners ─────────────────────────────────────────── */}
+      {/* ── Banners ───────────────────────────────────────────── */}
       <div className="tug-banners">
         {dominanceBanner && <div className="tug-dominance-banner">{dominanceBanner}</div>}
         {comebackBanner  && <div className="tug-comeback-banner">{comebackBanner}</div>}
@@ -572,7 +874,7 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
         {streakText && <div className="streak-banner">{streakText}</div>}
       </div>
 
-      {/* ── Question + input ─────────────────────────────────── */}
+      {/* ── Question + input ───────────────────────────────────── */}
       <div className="tug-question-section">
         <div
           className={`question-card question-type-${questionType}
@@ -596,8 +898,8 @@ export default function TugOfWarScreen({ roomId, playerName, opponentWinStreak =
             type="number"
             placeholder="Your answer…"
             value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && submitAnswer()}
+            onChange={e => setAnswer(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && submitAnswer()}
             autoComplete="off"
             disabled={isInputFrozen || isInputSlowed}
           />
