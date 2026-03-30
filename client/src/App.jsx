@@ -3,6 +3,7 @@ import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react';
 import HomeScreen from './screens/HomeScreen';
 import LobbyScreen from './screens/LobbyScreen';
 import GameScreen from './screens/GameScreen';
+import TugOfWarScreen from './screens/TugOfWarScreen';
 import ResultScreen from './screens/ResultScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import { getSocket, disconnectSocket } from './socket/client';
@@ -14,8 +15,8 @@ export default function App() {
   const [result, setResult] = useState(null);
   const myIdRef = useRef(null);
 
-  function handleJoinQueue(playerName) {
-    setLobbyInfo({ type: 'queue', playerName });
+  function handleJoinQueue(playerName, _socketId, gameMode = 'classic') {
+    setLobbyInfo({ type: 'queue', playerName, gameMode });
     setScreen('lobby');
   }
 
@@ -24,7 +25,7 @@ export default function App() {
     setScreen('lobby');
   }
 
-  function handleMatchFoundWithMeta({ roomId, opponent, playerNameOverride }) {
+  function handleMatchFoundWithMeta({ roomId, opponent, playerNameOverride, gameMode }) {
     const socket = getSocket();
     myIdRef.current = socket?.id || null;
     setGameInfo({
@@ -32,6 +33,7 @@ export default function App() {
       playerName: playerNameOverride || lobbyInfo?.playerName || 'Player',
       opponent: opponent || null,
       opponentWinStreak: opponent?.winStreak || 0,
+      gameMode: gameMode || lobbyInfo?.gameMode || 'classic',
     });
     setScreen('game');
   }
@@ -111,7 +113,16 @@ export default function App() {
           />
         )}
 
-        {screen === 'game' && gameInfo && (
+        {screen === 'game' && gameInfo && gameInfo.gameMode === 'tug' && (
+          <TugOfWarScreen
+            roomId={gameInfo.roomId}
+            playerName={gameInfo.playerName}
+            opponentWinStreak={gameInfo.opponentWinStreak || 0}
+            onGameEnd={handleGameEnd}
+          />
+        )}
+
+        {screen === 'game' && gameInfo && gameInfo.gameMode !== 'tug' && (
           <GameScreen
             roomId={gameInfo.roomId}
             playerName={gameInfo.playerName}
