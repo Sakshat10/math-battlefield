@@ -9,7 +9,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { verifyToken } = require('@clerk/backend');
 const { registerHandlers } = require('./socket/handlers');
-const { connectMongo } = require('./db/mongo');
+const { connectMongo, isMongoConnected } = require('./db/mongo');
 const {
   ensureUser,
   getLeaderboard,
@@ -58,6 +58,13 @@ async function authMiddleware(req, res, next) {
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+app.get('/db-status', (req, res) => {
+  res.json({
+    mongodb: isMongoConnected() ? 'connected' : 'disconnected',
+    canPersistStats: isMongoConnected() && Boolean(process.env.MONGODB_URI),
+  });
+});
 
 app.get('/me', authMiddleware, async (req, res) => {
   const profile = await getUserProfile({
@@ -131,6 +138,4 @@ httpServer.listen(PORT, () => {
   console.log(`✅ Math Battle server running on http://localhost:${PORT}`);
 });
 
-connectMongo().catch((err) => {
-  console.error('[mongo] connect failed:', err.message);
-});
+connectMongo();
