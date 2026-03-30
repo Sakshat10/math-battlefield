@@ -33,13 +33,14 @@ class MatchmakingService {
 
   // ── Private rooms ─────────────────────────────────────────────────────────
 
-  createRoom(player) {
+  createRoom(player, options = {}) {
     const code = this._generateCode();
     this.rooms[code] = {
       roomId: `room_${code}`,
       code,
       players: [player],
       started: false,
+      gameMode: options.gameMode || 'classic',
     };
     return code;
   }
@@ -65,6 +66,7 @@ class MatchmakingService {
         player2: room.players[1],
         roomId: room.roomId,
         code,
+        gameMode: room.gameMode || 'classic',
       };
     }
 
