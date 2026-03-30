@@ -1,6 +1,6 @@
 const { User } = require('../models/User');
 const { Match } = require('../models/Match');
-const mongoose = require('mongoose');
+const { isMongoConnected } = require('../db/mongo');
 
 const XP_REWARD = {
   WIN: 40,
@@ -37,7 +37,7 @@ function getUserIdentity({ clerkId, username }) {
 }
 
 function hasPersistence() {
-  return Boolean(process.env.MONGODB_URI) && mongoose.connection.readyState === 1;
+  return Boolean(process.env.MONGODB_URI) && isMongoConnected();
 }
 
 async function ensureUser({ clerkId, username }) {
